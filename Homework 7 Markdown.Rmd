@@ -1,0 +1,314 @@
+---
+title: "Homework 7 Markdown"
+author: "Samuel Guzman"
+date: "10/27/2020"
+output: html_document
+---
+
+For today, we’ll consider data from Brutsaert et al. 2002 looking at how progestrone levels influence respiration at altitude. The data can be downloaded here with progestrone levels and ventilation as a metric of breathing.
+
+1. Create models with different polys
+
+Let’s first look at the data. Plot it, along with a polynomial fit (remember, formula = y ~ poly(x,2) for a quadratic). Then, compare the r2 value of a linear versus fith order fit. What do you see?
+
+```{r a}
+# Load the data
+
+brutsaert <- read.csv("chap17q07ProgesteroneExercise.csv")
+
+# Plot the data
+
+library(ggplot2)
+pen_plot_base_Q1 <- ggplot(data = brutsaert,
+                        mapping = aes(x = progesterone,
+                                      y = ventilation))
+pen_plot_base_Q1 +
+  geom_point(size = 3,
+             color = "blue") +
+    stat_smooth(method = "lm", color = "red") + # linear fit
+    stat_smooth(method="lm", color = "green", formula= y~poly(x,2)) + # quadratic
+    stat_smooth(method="lm", color = "yellow", formula= y~poly(x,3)) + # third order polynomial
+    stat_smooth(method="lm", color = "orange", formula= y~poly(x,4)) + # fourth order polynomial
+    stat_smooth(method="lm", color = "purple", formula= y~poly(x,5)) # fifth order polynomial
+
+# Variables for lms for easy access
+
+brutsaert_lm <- lm(ventilation ~ progesterone, data = brutsaert) # linear model
+brutsaert_lm_second <- lm(formula = ventilation ~ poly(progesterone, 2), data = brutsaert)
+ # quadratic model
+brutsaert_lm_third <- lm(formula = ventilation ~ poly(progesterone, 3), data = brutsaert)
+ # third poly
+brutsaert_lm_fourth <- lm(formula = ventilation ~ poly(progesterone, 4), data = brutsaert)
+ # fourth poly
+brutsaert_lm_fifth <- lm(formula = ventilation ~ poly(progesterone, 5), data = brutsaert)
+ # fifth poly
+
+
+# Get R^2s
+
+summary(brutsaert_lm_fifth)$r.squared # fifth order polynomial fit
+summary(brutsaert_lm)$r.squared # linear fit
+
+
+```
+
+The linear fit has a slightly lower r^2 compared to the fifth order polynomial fit.
+
+2. Fit each model with 5-fold CV
+
+Does that result hold up, or is it due to overfitting? Let’s evaluate by comparing 5-fold CV scores using RMSE. Let’s do this efficiently, though!
+
+A. Get things ready! Make a 5-fold cross validation tibble using rsample::vfold_cv() and then combine each possible fold with the polynomials 1:5 using tidyr::crossing()
+
+```{r b}
+# Make a 5-fold cross validation tibble
+cross_val_tibble <- rsample::vfold_cv(data = brutsaert, v = 5, strata = NULL)
+
+# Combine each fold with a polynomial 1:5 using tidyr::crossing()
+
+library(tidyr)
+cross_val_tibble_crossing <- crossing(cross_val_tibble, polynomial_order = 1:5) # Create a tibble w polynomial orders using crossing
+
+cross_val_tibble_crossing
+
+```
+
+
+
+B. Now you have splits and a column of coefficients. Use purr::map2() to make a list column of fit models, where you use the splits and data and the polynomials for you poly() call in the model.
+
+```{r c}
+library(dplyr)
+library(purrr)
+library(modelr)
+library(rsample)
+
+
+# This code is adapted from Jarett's class code on cross validation
+
+# Begin with the 5-fold tibble from A but set as a new tibble
+cross_val_tibble_crossing_w_models <- cross_val_tibble_crossing %>%
+
+  # create a new column mods, which we make with map
+  # iterating over all of our splits
+  mutate(fit_models = map2(splits, 
+                           polynomial_order,
+                           #for each split, fit a model using
+                           #the training data set
+                           ~lm(ventilation ~ poly(progesterone, .y),
+                               data = analysis(.x))))
+
+cross_val_tibble_crossing_w_models
+
+
+```
+
+
+C. Great! Now, calculate the rmse for each fold/polynomial combination as we did in lab.
+
+```{r d}
+library(modelr)
+library(rsample)
+
+# extract the out of sample rmse for each model at each fold
+# using a function called map2
+x <- 1:10
+y <- 11:20
+
+map2_dbl(x, y, ~.x + .y)
+
+# start with our tibble
+cross_val_tibble_crossing_3 <- cross_val_tibble_crossing_w_models %>%
+  
+  # create a new column, rmse, which we make with map2
+  # iterating over all splits AND fit models
+  mutate(rmse = map2_dbl(.x = splits, .y = fit_models,
+                         ~rmse(model = .y,
+                               data = assessment(.x))))
+
+# Show that the rmse values for each fold are in the tibble
+cross_val_tibble_crossing_3
+
+
+```
+
+D. Implications - ok, given that the 5-fold score is the average RMSE across all folds for a given polynomial, show in both a table and figure the relationship between polynomial and out-of-sample RMSE. What does this tell you?
+
+```{r e}
+# Create a new tibble for the 5-fold scores
+scores_tibble <- cross_val_tibble_crossing_3 %>%
+  group_by(polynomial_order) %>% # Group according to polynomial order
+  summarize(five_fold_score = mean(rmse)) # Create score column with average of rmse values 
+
+scores_tibble
+
+```
+
+```{r f}
+# Show the relationship through a plot
+
+pen_plot_base_Q2 <- ggplot(data = scores_tibble,
+                        mapping = aes(x = polynomial_order,
+                                      y = five_fold_score))
+
+pen_plot_base_Q2 +
+  geom_point(size = 3,
+             color = "blue") 
+
+
+
+```
+
+As shown in both the table and the plot, as polynomial order increases, five fold score also increases. There is however a dip at polynomial order 4. According to the link below, RMSE is a measure of "how concentrated the data is around the line of best fit". A lower RMSE means that the model better represents the data. In this case, that would be polynomial order 1 (linear).
+
+https://www.statisticshowto.com/probability-and-statistics/regression-analysis/rmse-root-mean-square-error/
+
+3. Compare models and see how they differ from AIC
+
+That was all well and good, but, how to these results compare to doing this analysis with AIC using the AICcmodavg package? Note, you can use dplyr and purrr to not have to fit each model manually.
+
+
+```{r g}
+
+# The variables for the lm()s for each polynomial are needed here. 
+# I calculated them in 1. and they're named:
+# brutsaert_lm, brutsaert_lm_second, brutsaert_lm_third, brutsaert_lm_fourth, brutsaert_lm_fifth
+# It could be useful to also compare with an integer model. 
+
+brutsaert_int <- lm(ventilation ~ 1, data = brutsaert)
+
+# Preparation variables for aictab()
+
+models_list <- list(brutsaert_int, brutsaert_lm, brutsaert_lm_second, brutsaert_lm_third, brutsaert_lm_fourth, brutsaert_lm_fifth)
+model_names <- c("integer", "linear", "quadratic", "third order", "fourth order", "fifth order")
+
+library(AICcmodavg)
+
+aictab(models_list, model_names)
+
+```
+
+The values in column AICc are the AIC values. In ascending order by AIC, the models are linear, quadratic, third order, integer, fourth order, and fifth order.
+
+EC 4. boot::gv.glm()
+
+Let’s try again, for orders 1-5, but this time, let’s do a LOOCV analysis using boot::cv.glm(). Using dplyr and purrr will make things faster and more efficient here - perhaps even with something you created in #3, if you used glm() instead of lm().
+
+Although, if you do that, quick note that you will need to use a map2_*() function with polys in it so that it’s variable can match the . variable used. This may seem like a weird sentence. But, once you get the error that made me realize this, you’ll get it.
+
+5. Grid sample with Bayes
+
+A. Let’s start with the Palmer Penguins data. Let’s look at just the Gentoo. Why don’t you plot the distribution of the average flipper length of females. We’ll use this data for the exercise. Remember to remove NAs - it will make the rest of the exercise easier. 1 EC for each thing you do to snaz the plot up.
+
+```{r h}
+
+library(palmerpenguins) # Load Palmer Penguins
+Gentoo <- filter(penguins, species == "Gentoo") # Filter to just the Gentoo
+Gentoo_f <- filter(Gentoo, sex == "female") # Filter to Gentoo females
+Gentoo_f_NA_omit <- na.omit(Gentoo_f)  # Remove NA rows
+
+# Plot the average flipper length of females
+# I am assuming that the values are already averages.
+# I think that a good way to see a distribution is a histogram
+
+qplot(Gentoo_f_NA_omit$flipper_length_mm, 
+      geom="histogram",
+      binwidth = 1,
+      main = "Histogram for Gentoo Female Flipper Lengths (mm)",
+      xlab = "Flipper Length (mm)",
+      ylab = "Count",
+      fill=I("pink"), # EC 1
+      col=I("purple") # EC 2
+      ) +
+  theme(plot.margin = unit(c(1,1,1,1), "cm"), # EC 3
+        plot.background = element_rect(fill = "Pink")) # EC 4
+
+```
+
+B. OK, this is pretty normal, with a mean of 212.71 and sd of 3.9. Make a grid to search a number of values around that mean and SD, just as you did for likelihood. Let’s say 100 values of each parameter.
+
+```{r i}
+
+norm_likelihood <- function(obs, mean_est, sd_est){
+  
+  #data generating process
+  est <- mean_est
+  
+  #log likelihood
+  sum(dnorm(obs, mean = est, sd = sd_est, log = TRUE))
+  
+}
+
+gentoo_f_flipper_dist <- crossing(m = seq(208, 216, length.out = 10), 
+                         s=seq(0, 8, length.out = 10)) %>%
+  rowwise() %>%
+  mutate(log_lik = norm_likelihood(obs = Gentoo_f_NA_omit$flipper_length_mm, mean_est = m, sd_est = s)) %>% 
+  ungroup()
+
+gentoo_f_flipper_dist
+
+# Comment: I'm not sure if the log_lik column is necessary for this problem, but I included it, because it is in https://biol607.github.io/lab/07_likelihood.html#2_likelihood_of_a_data_set
+  
+```
+
+C. Write a function that will give you the numerator for any combination of m and s! This is just the same as writing a function for likelihood, but including an additional multiplier of p(H), when putting in the likelihood. Let’s assume a prior for m of dnorm(210, 50) and for s of dunif(1,10) - so, pretty weak!
+
+```{r j}
+
+get_numerator <- function(obs, mean_est, sd_est){
+
+  #log likelihood for observations, mean, sd as usual
+  prior_usual <<- sum(dnorm(obs, mean = mean_est, sd = sd_est, log = TRUE))
+  
+  # Prior m
+  prior_m <<- sum(dnorm(gentoo_f_flipper_dist$m, 210, 50, log = TRUE))
+  
+  # Prior s
+  prior_s <<- sum(dunif(gentoo_f_flipper_dist$s, 1, 10, log = TRUE))
+  
+  # Numerator
+  numerator <<- prior_usual * prior_m + prior_s
+}
+  
+```
+
+D. Great! Now use this function with your sample grid to get the numerator of the posterior, and then standardize with the p(D) - the sum of all numerators - to get a full posterior. Note, as we’re working in logs, we just subtract log(p(D)) What is the modal estimate of each parameter? How do they compare to the standard frequentist estimate?
+
+```{r k}
+
+obs <- Gentoo_f_NA_omit$flipper_length_mm
+mean_est <- 212.71
+sd_est <- 3.9
+
+final_tibble <- gentoo_f_flipper_dist %>%
+  rowwise(m,s) %>%
+  mutate(numerator = get_numerator(obs,m,s)) %>%
+  filter(log_lik != "NaN" & log_lik != "-Inf") %>% #remove NaN and -inf
+  mutate(log_posterior = numerator - (sum(exp(numerator))), #
+         posterior = exp(log_posterior))
+
+final_tibble
+
+
+```
+
+6. Final Project Thinking
+
+We’re at the half-way point in the course, and after the mid-term, it’s time to start thinking about your final project. So…. I want to know a bit about what you’re thinking of!
+
+A. What is the dataset you are thinking of working with? Tell me a bit about what’s in it, and where it comes from.
+
+I would like to work with a dataset of historic precipitation events (perhaps within the past decade or two). I may be able to find the dataset on NOAA.gov. Working with this dataset would also help with my master's thesis. The dataset may contain hourly precipitation values or daily precipitation values.
+
+https://www.ncei.noaa.gov/metadata/geoportal/rest/metadata/item/gov.noaa.ncdc:C00313/html
+
+B. What question do you want to ask of that data set?
+
+I would like to check with my graduate advisor regarding the best question to ask. Some questions that come to mind are:
+
+1. How many days with no rain (on average) pass between storm events? (this may be too simple)
+2. What can be determined about extreme precipitation events? (e.g. how different they are in terms of precipitation level/depth from lesser storm events)
+3. What is the likelihood of a subsequent high-precipitation storm occuring closely after a extreme high-precipitation event?
+
+EC C. Wanna make a quick visualization of some aspect of the data that might be provocative and interesting?
+
